@@ -3,10 +3,11 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { Tray, TrayEvent, TrayPlacement } from '../types/tray';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +15,9 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  trays!: Table<Tray, string>;
+  placements!: Table<TrayPlacement, string>;
+  trayEvents!: Table<TrayEvent, string>;
 
   constructor() {
     super(DB_NAME);
@@ -48,6 +52,17 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：新增托盘追踪三张表；旧表结构不动，老记录（含零件）原样保留。
+    // placements 用唯一索引兜底两条硬约束：同一格位不并放、同一零件不两处。
+    this.version(3).stores({
+      clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+      parts: 'id, clockId, name, wearState, decision, sourceLot',
+      steps: 'id, clockId, seq, stepType, state, startedAt',
+      tests: 'id, clockId, testedAt, conclusion',
+      trays: 'id, trayNo, state, createdAt',
+      placements: 'id, trayId, clockId, &[trayId+cellNo], &partId',
+      trayEvents: 'id, trayId, clockId, partId, action, at',
+    });
   }
 }
 
@@ -231,10 +246,88 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.clocks, db.parts, db.steps, db.tests, async () => {
-    await db.clocks.bulkPut(clocks);
-    await db.parts.bulkPut(parts);
-    await db.steps.bulkPut(steps);
-    await db.tests.bulkPut(tests);
-  });
+  const trayA: Tray = {
+    id: newId('try'),
+    trayNo: 'TRAY-A01',
+    rows: 4,
+    cols: 6,
+    location: '修复台 A-2 抽屉',
+    state: 'open',
+    note: '拆解通用盘，多台钟表零件混放',
+    createdAt: now - 12 * day,
+  };
+
+  // 在盘现状：发条经转格后位于 B3，摆轮在 B4（与流水一致）
+  const placements: TrayPlacement[] = [
+    {
+      id: newId('plc'),
+      trayId: trayA.id,
+      cellNo: 9,
+      clockId: clockA,
+      partId: parts[0].id,
+      operator: '祁仲言',
+      placedAt: now - 11 * day,
+    },
+    {
+      id: newId('plc'),
+      trayId: trayA.id,
+      cellNo: 10,
+      clockId: clockB,
+      partId: parts[2].id,
+      operator: '祁仲言',
+      placedAt: now - 10 * day,
+    },
+  ];
+
+  const trayEvents: TrayEvent[] = [
+    {
+      id: newId('tev'),
+      trayId: trayA.id,
+      action: 'place',
+      cellNo: 3,
+      clockId: clockA,
+      partId: parts[0].id,
+      operator: '祁仲言',
+      at: now - 12 * day,
+      note: '拆解工序下台，先放 A3',
+    },
+    {
+      id: newId('tev'),
+      trayId: trayA.id,
+      action: 'move',
+      cellNo: 9,
+      fromTrayId: trayA.id,
+      fromCellNo: 3,
+      clockId: clockA,
+      partId: parts[0].id,
+      operator: '祁仲言',
+      at: now - 11 * day,
+      note: 'A 区腾给新拆解件，移至 B3',
+    },
+    {
+      id: newId('tev'),
+      trayId: trayA.id,
+      action: 'place',
+      cellNo: 10,
+      clockId: clockB,
+      partId: parts[2].id,
+      operator: '祁仲言',
+      at: now - 10 * day,
+      note: '怀表摆轮临时存放 B4',
+    },
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.clocks, db.parts, db.steps, db.tests, db.trays, db.placements, db.trayEvents],
+    async () => {
+      await db.clocks.bulkPut(clocks);
+      await db.parts.bulkPut(parts);
+      await db.steps.bulkPut(steps);
+      await db.tests.bulkPut(tests);
+      await db.trays.bulkPut([trayA]);
+      await db.placements.bulkPut(placements);
+      await db.trayEvents.bulkPut(trayEvents);
+    },
+  );
 }

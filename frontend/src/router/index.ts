@@ -4,6 +4,8 @@ import ClockDetail from '../pages/ClockDetail.vue';
 import StepForm from '../pages/StepForm.vue';
 import PartList from '../pages/PartList.vue';
 import TestView from '../pages/TestView.vue';
+import TrayList from '../pages/TrayList.vue';
+import TrayDetail from '../pages/TrayDetail.vue';
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/clocks' },
@@ -11,6 +13,8 @@ const routes: RouteRecordRaw[] = [
   { path: '/clocks/:id', name: 'clock-detail', component: ClockDetail },
   { path: '/steps/new', name: 'step-form', component: StepForm },
   { path: '/parts', name: 'part-list', component: PartList },
+  { path: '/trays', name: 'tray-list', component: TrayList },
+  { path: '/trays/:id', name: 'tray-detail', component: TrayDetail },
   { path: '/tests/:clockId', name: 'test-view', component: TestView },
   { path: '/:pathMatch(.*)*', redirect: '/clocks' },
 ];
