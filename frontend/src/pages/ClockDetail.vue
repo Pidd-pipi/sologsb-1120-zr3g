@@ -5,10 +5,12 @@ import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { usePartStore } from '../stores/partStore';
 import { useStepStore } from '../stores/stepStore';
+import { useTrayStore } from '../stores/trayStore';
 import { useRepairProgress } from '../hooks/useRepairProgress';
 import StepSequence from '../components/common/StepSequence.vue';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
+import TrayEventLog from '../components/common/TrayEventLog.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
 import { judgeTest } from '../types/test';
 
@@ -17,12 +19,15 @@ const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const trayStore = useTrayStore();
 
 const clockId = computed(() => String(route.params.id ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
 const { progress, steps, done, total, percent, current, gaps } = useRepairProgress(clockId);
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
+const trayPlacements = computed(() => trayStore.placementsOfClock(clockId.value));
+const trayEvents = computed(() => trayStore.eventsByClock(clockId.value));
 const activeTab = ref('steps');
 
 async function finish(id: string) {
@@ -51,10 +56,15 @@ async function changeGrade(value: unknown) {
   ElMessage.success(`品相等级已更新为「${grade}」`);
 }
 
+function partName(id: string): string {
+  return partStore.items.find((p) => p.id === id)?.name ?? '未知零件';
+}
+
 onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
+  await trayStore.load();
 });
 </script>
 
@@ -142,6 +152,37 @@ onMounted(async () => {
                 <RateChart :readings="t.positions" />
               </div>
               <el-empty v-if="tests.length === 0" description="暂无走时测试记录" :image-size="60" />
+            </el-tab-pane>
+            <el-tab-pane :label="`托盘追踪（${trayPlacements.length} 在盘）`" name="tray">
+              <el-alert
+                v-if="trayPlacements.length === 0"
+                type="success"
+                :closable="false"
+                show-icon
+                title="该钟表当前没有散落在托盘格位中的零件"
+                style="margin-bottom: 10px"
+              />
+              <el-table v-if="trayPlacements.length > 0" :data="trayPlacements" size="small" border style="margin-bottom: 14px">
+                <el-table-column label="当前托盘" width="120">
+                  <template #default="{ row }">
+                    <el-link type="primary" @click="router.push(`/trays?trayId=${row.trayId}`)">
+                      {{ trayStore.trayName(row.trayId) }}
+                    </el-link>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="slotCode" label="格位" width="90" />
+                <el-table-column label="零件" width="130">
+                  <template #default="{ row }">{{ partName(row.partId) }}</template>
+                </el-table-column>
+                <el-table-column label="放入时间" width="170">
+                  <template #default="{ row }">{{ new Date(row.putAt).toLocaleString('zh-CN', { hour12: false }) }}</template>
+                </el-table-column>
+                <el-table-column prop="putBy" label="末次经手人" width="110" />
+              </el-table>
+              <div class="card-head" style="margin-bottom: 8px">
+                <strong>托盘流水（含已关盘，共 {{ trayEvents.length }} 条）</strong>
+              </div>
+              <TrayEventLog :clock-id="clockId" hide-clock :max="50" empty-text="暂无托盘经手记录" />
             </el-tab-pane>
           </el-tabs>
         </el-card>

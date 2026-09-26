@@ -3,10 +3,11 @@ import type { Clock } from '../types/clock';
 import type { MovementPart } from '../types/part';
 import type { RepairStep } from '../types/step';
 import type { TimekeepingTest } from '../types/test';
+import type { SlotPlacement, Tray, TrayEvent } from '../types/tray';
 import { newId } from './id';
 
 export const DB_NAME = 'gbclockrepair';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbclockrepair:db-version';
 
 class ClockRepairDB extends Dexie {
@@ -14,6 +15,10 @@ class ClockRepairDB extends Dexie {
   parts!: Table<MovementPart, string>;
   steps!: Table<RepairStep, string>;
   tests!: Table<TimekeepingTest, string>;
+  trays!: Table<Tray, string>;
+  /** 复合主键 [trayId+slotCode]：一格一位；partId 唯一索引：一零件一位 */
+  placements!: Table<SlotPlacement, [string, string]>;
+  trayEvents!: Table<TrayEvent, string>;
 
   constructor() {
     super(DB_NAME);
@@ -48,6 +53,17 @@ class ClockRepairDB extends Dexie {
             if (row.positions === undefined) row.positions = [];
           });
       });
+    // v3：托盘追踪——新增 trays / placements / trayEvents 三张表；
+    // 旧表 clocks / parts / steps / tests 原样保留，不做任何改写
+    this.version(3).stores({
+      clocks: 'id, clockNo, kind, caliber, conditionGrade, createdAt',
+      parts: 'id, clockId, name, wearState, decision, sourceLot',
+      steps: 'id, clockId, seq, stepType, state, startedAt',
+      tests: 'id, clockId, testedAt, conclusion',
+      trays: 'id, name, status, openedAt',
+      placements: '[trayId+slotCode], trayId, clockId, &partId',
+      trayEvents: 'id, trayId, clockId, partId, type, at',
+    });
   }
 }
 
@@ -159,6 +175,20 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
+  // 换新风波后的新发条：旧发条（parts[0]）记录保留，新件另立条目
+  const mainspringNew: MovementPart = {
+    id: newId('prt'),
+    clockId: clockA,
+    name: '发条',
+    qtyNeeded: 1,
+    position: '条盒内',
+    wearState: '完好',
+    decision: '保留',
+    sourceLot: 'MS-2026-09',
+    dimension: 0.35,
+  };
+  parts.push(mainspringNew);
+
   const steps: RepairStep[] = [
     {
       id: newId('stp'),
@@ -231,10 +261,80 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.clocks, db.parts, db.steps, db.tests, async () => {
-    await db.clocks.bulkPut(clocks);
-    await db.parts.bulkPut(parts);
-    await db.steps.bulkPut(steps);
-    await db.tests.bulkPut(tests);
-  });
+  // —— 托盘追踪示范 ——
+  const trayOpen: Tray = {
+    id: newId('tray'),
+    name: 'T-01',
+    rows: 4,
+    cols: 6,
+    status: 'open',
+    openedAt: now - 3 * day,
+    openedBy: '祁仲言',
+  };
+  const trayClosed: Tray = {
+    id: newId('tray'),
+    name: 'T-00',
+    rows: 3,
+    cols: 5,
+    status: 'closed',
+    openedAt: now - 11 * day,
+    openedBy: '祁仲言',
+    closedAt: now - 6 * day,
+    closedBy: '祁仲言',
+  };
+  const t = (hour: number) => now - hour * 3600000;
+  const placements: SlotPlacement[] = [
+    {
+      trayId: trayOpen.id,
+      slotCode: 'A1',
+      clockId: clockA,
+      partId: parts[1].id,
+      putAt: t(20),
+      putBy: '祁仲言',
+    },
+    {
+      trayId: trayOpen.id,
+      slotCode: 'B3',
+      clockId: clockB,
+      partId: parts[2].id,
+      putAt: t(6),
+      putBy: '祁仲言',
+    },
+    {
+      trayId: trayOpen.id,
+      slotCode: 'A3',
+      clockId: clockA,
+      partId: mainspringNew.id,
+      putAt: t(26),
+      putBy: '祁仲言',
+    },
+  ];
+  const trayEvents: TrayEvent[] = [
+    // T-00：已关盘的一轮完整流水（新发条跨盘转走，空盘关盘）
+    { id: newId('tev'), trayId: trayClosed.id, type: 'open', clockId: '', partId: '', at: now - 11 * day, operator: '祁仲言', note: '3 行 × 5 列，共 15 格' },
+    { id: newId('tev'), trayId: trayClosed.id, type: 'put', clockId: clockA, partId: parts[0].id, at: now - 11 * day + 2 * 3600000, operator: '祁仲言', slotCode: 'A1', note: '断发条，待配换' },
+    { id: newId('tev'), trayId: trayClosed.id, type: 'move', clockId: clockA, partId: parts[0].id, at: now - 9 * day, operator: '祁仲言', fromTrayId: trayClosed.id, fromSlotCode: 'A1', toTrayId: trayClosed.id, toSlotCode: 'C2', note: '给清洗托盘腾格' },
+    { id: newId('tev'), trayId: trayClosed.id, type: 'replace', clockId: clockA, partId: parts[0].id, at: now - 7 * day, operator: '祁仲言', slotCode: 'C2', fromTrayId: trayClosed.id, fromSlotCode: 'C2', toTrayId: trayClosed.id, toSlotCode: 'C2', newPartId: mainspringNew.id, note: 'MS-2026-09 批次新发条入替' },
+    { id: newId('tev'), trayId: trayOpen.id, type: 'open', clockId: '', partId: '', at: now - 3 * day, operator: '祁仲言', note: '4 行 × 6 列，共 24 格' },
+    { id: newId('tev'), trayId: trayOpen.id, type: 'move', clockId: clockA, partId: mainspringNew.id, at: now - 3 * day + 3600000, operator: '祁仲言', fromTrayId: trayClosed.id, fromSlotCode: 'C2', toTrayId: trayOpen.id, toSlotCode: 'A2', note: '新件复捡，转开盘 T-01' },
+    { id: newId('tev'), trayId: trayClosed.id, type: 'close', clockId: '', partId: '', at: now - 3 * day + 2 * 3600000, operator: '祁仲言' },
+    // T-01：开盘中，新发条转出后落格 A3，宝石轴承 A1，摆轮 B3
+    { id: newId('tev'), trayId: trayOpen.id, type: 'put', clockId: clockA, partId: parts[1].id, at: t(20), operator: '祁仲言', slotCode: 'A1', note: '清洗后待配' },
+    { id: newId('tev'), trayId: trayOpen.id, type: 'move', clockId: clockA, partId: mainspringNew.id, at: t(26), operator: '祁仲言', fromTrayId: trayOpen.id, fromSlotCode: 'A2', toTrayId: trayOpen.id, toSlotCode: 'A3' },
+    { id: newId('tev'), trayId: trayOpen.id, type: 'put', clockId: clockB, partId: parts[2].id, at: t(6), operator: '祁仲言', slotCode: 'B3', note: '怀表摆轮待点油' },
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.clocks, db.parts, db.steps, db.tests, db.trays, db.placements, db.trayEvents],
+    async () => {
+      await db.clocks.bulkPut(clocks);
+      await db.parts.bulkPut(parts);
+      await db.steps.bulkPut(steps);
+      await db.tests.bulkPut(tests);
+      await db.trays.bulkPut([trayOpen, trayClosed]);
+      await db.placements.bulkPut(placements);
+      await db.trayEvents.bulkPut(trayEvents);
+    },
+  );
 }
